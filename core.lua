@@ -64,7 +64,7 @@ local word = alpha * alnum ^ 0
 local name = C(word)
 local typename = C(word * ("." * word) ^ 0)
 local tag = R"09" ^ 1 / tonumber
-local mainkey = "(" * blank0 * name * blank0 * ")"
+local mainkey = "(" * blank0 * C((word ^ 0)) * blank0 * ")"
 local decimal = "(" * blank0 * C(tag) * blank0 * ")"
 
 local function multipat(pat)
@@ -98,7 +98,7 @@ end
 
 local typedef = P {
 	"ALL",
-	FIELD = namedfield(name * blanks * tag * blank0 * ":" * blank0 * (C"*")^0 * typename * (mainkey + decimal)^0),
+	FIELD = namedfield(name * blanks * tag * blank0 * ":" * blank0 * (C"*")^-1 * typename * (mainkey + decimal)^0),
 	STRUCT = P"{" * multipat(V"FIELD" + V"TYPE") * P"}",
 	TYPE = namedpat("type", P"." * name * blank0 * V"STRUCT" ),
 	SUBPROTO = Ct((C"request" + C"response") * blanks * (typename + V"STRUCT")),
@@ -116,7 +116,13 @@ function convert.protocol(all, obj, namespace)
 	local ex = namespace and namespace.."." or ""
 
 	for _, p in ipairs(obj[3]) do
-		assert(result[p[1]] == nil)
+		local pt = p[1]
+		if result[pt] ~= nil then
+			local meta_info = tostring(result.meta)
+			error(string.format("redefine %s in protocol %s"..meta_info,
+					highlight_tag(pt),
+					highlight_type(result.name)))
+		end
 		local typename = p[2]
 		local tt = type(typename)
 		if tt == "table" then
@@ -133,6 +139,10 @@ function convert.protocol(all, obj, namespace)
 	end
 	return result
 end
+local map_keytypes = {
+	integer = true,
+	string = true,
+}
 
 function convert.type(all, obj)
 	local result = {}
@@ -210,6 +220,7 @@ local buildin_types = {
 	boolean = 1,
 	string = 2,
 	binary = 2,
+	double = 3,
 }
 
 local function checktype(types, ptype, t)
@@ -278,16 +289,41 @@ local function flattypename(r)
 
 			if f.array and f.key then
 				local key = f.key
-				local reason = "Invalid map index: "..highlight_tag(key)..tostring(f.meta)
-				local vtype=r.type[fullname]
-				for _,v in ipairs(vtype) do
-					if v.name == key and buildin_types[v.typename] then
-						f.key=v
-						reason = false
-						break
+				local vtype = r.type[fullname]
+				-- map 字段不带有key，将会校验对应的map类型是否满足2个field和key类型
+				if key == "" then
+					local c = #vtype
+					-- 校验map字段的类型必然是有2个field
+					if c ~= 2 then
+						error(string.format("Invalid map type: %s, must only have two fields %s",
+							highlight_type(fullname), tostring(f.meta)))
 					end
+					local map_key = vtype[1]
+					local map_value = vtype[2]
+					if map_key.tag > map_value.tag then
+						map_key, map_value = map_value, map_key
+					end
+					-- key类型不合法
+					if not buildin_types[map_key.typename] then
+						error(string.format("Invalid map type: %s invalid key type %s",
+							highlight_type(fullname), tostring(f.meta)))
+					end
+					f.map = true -- 兼容spb
+					f.map_keyfield = map_key
+					f.map_valuefield = map_value
+				else
+					local reason = "Invalid map index: "..highlight_tag(key)..tostring(f.meta)
+					for _,v in ipairs(vtype) do
+						if v.name == key and buildin_types[v.typename] then
+							f.key=v.name
+							f.map_keyfield = v
+							f.map_valuefield = f
+							reason = false
+							break
+						end
+					end
+					if reason then error(reason) end
 				end
-				if reason then error(reason) end
 			end
 		end
 	end
